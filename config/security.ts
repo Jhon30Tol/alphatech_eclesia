@@ -5,6 +5,8 @@ import { User } from '../types';
 // o painel de gestão do SaaS, independentemente do que conste no banco de dados.
 const SUPER_ADMIN_WHITELIST = [
     'altechzero@gmail.com',
+    'jonathas.tpereira@gmail.com',
+    'jonathas.toledo@hotmail.com',
     // Adicione outros emails da equipe ARXTech aqui se necessário
 ];
 
