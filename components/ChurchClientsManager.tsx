@@ -3,9 +3,11 @@ import { supabase } from '../lib/supabase';
 import { SubscriptionStatus } from '../types';
 
 interface ChurchClient {
-  id: string;
-  nome: string;
+  id: string; // ID do perfil
+  nome: string; // Nome do usuário (admin)
   emailAdmin: string;
+  igrejaId: string | null;
+  igrejaNome: string;
   planoNome: string;
   status: SubscriptionStatus;
   dataExpiracao: string;
@@ -13,60 +15,102 @@ interface ChurchClient {
 }
 
 const ChurchClientsManager: React.FC = () => {
-  const [churches, setChurches] = useState<ChurchClient[]>([]);
+  const [clients, setClients] = useState<ChurchClient[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
 
   useEffect(() => {
-    fetchChurches();
+    fetchClients();
   }, []);
 
-  const fetchChurches = async () => {
+  const fetchClients = async () => {
     try {
       setLoading(true);
+      // Alterado para buscar de perfis master
       const { data, error } = await supabase
-        .from('igrejas')
+        .from('perfis')
         .select(`
           id,
           nome,
-          email_principal,
-          status,
-          assinaturas (
-            status,
-            data_expiracao,
-            planos (nome)
-          ),
-          membros (count)
-        `);
+          email,
+          igreja_id,
+          igrejas (
+            id,
+            nome,
+            assinaturas (
+              status,
+              data_expiracao,
+              planos (nome)
+            ),
+            membros (count)
+          )
+        `)
+        .eq('role', 'admin_igreja');
 
       if (error) throw error;
 
-      const formatted: ChurchClient[] = data.map((c: any) => {
-        const sub = c.assinaturas?.[0];
+      const formatted: ChurchClient[] = data.map((p: any) => {
+        const igreja = p.igrejas;
+        const sub = igreja?.assinaturas?.[0];
+
         return {
-          id: c.id,
-          nome: c.nome,
-          emailAdmin: c.email_principal || 'Sem e-mail',
+          id: p.id,
+          nome: p.nome,
+          emailAdmin: p.email || 'Sem e-mail',
+          igrejaId: igreja?.id || null,
+          igrejaNome: igreja?.nome || 'Igreja não criada',
           planoNome: sub?.planos?.nome || 'Nenhum',
-          status: sub?.status || 'pendente',
+          status: sub?.status as SubscriptionStatus || 'pendente',
           dataExpiracao: sub?.data_expiracao || new Date().toISOString(),
-          membrosAtuais: c.membros?.[0]?.count || 0
+          membrosAtuais: igreja?.membros?.[0]?.count || 0
         };
       });
 
-      setChurches(formatted);
+      setClients(formatted);
     } catch (err) {
-      console.error('Erro ao buscar igrejas:', err);
+      console.error('Erro ao buscar clientes:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteClient = async (client: ChurchClient) => {
+    const confirmed = window.confirm(`Tem certeza que deseja excluir o cliente "${client.nome}"? Esta ação removerá os dados da igreja e assinaturas, mas a conta no Auth precisará ser removida manualmente.`);
+
+    if (!confirmed) return;
+
+    try {
+      setLoading(true);
+
+      // 1. Deletar assinaturas se houver igreja
+      if (client.igrejaId) {
+        await supabase.from('assinaturas').delete().eq('igreja_id', client.igrejaId);
+        // Outras tabelas dependentes da igreja deveriam ser deletadas aqui ou via CASCADE no banco
+        await supabase.from('membros').delete().eq('igreja_id', client.igrejaId);
+        await supabase.from('igrejas').delete().eq('id', client.igrejaId);
+      }
+
+      // 2. Deletar perfil
+      const { error } = await supabase.from('perfis').delete().eq('id', client.id);
+
+      if (error) throw error;
+
+      alert('Cliente excluído com sucesso do banco de dados.');
+      fetchClients();
+    } catch (err) {
+      console.error('Erro ao excluir cliente:', err);
+      alert('Erro ao excluir cliente do banco de dados.');
     } finally {
       setLoading(false);
     }
   };
 
   const exportToCSV = () => {
-    const headers = ['Igreja', 'Email', 'Plano', 'Status', 'Membros', 'Vencimento'];
+    const headers = ['Cliente', 'Email', 'Igreja', 'Plano', 'Status', 'Membros', 'Vencimento'];
     const rows = filtered.map(c => [
       c.nome,
       c.emailAdmin,
+      c.igrejaNome,
       c.planoNome,
       c.status,
       c.membrosAtuais,
@@ -82,25 +126,29 @@ const ChurchClientsManager: React.FC = () => {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `relatorio_igrejas_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `relatorio_clientes_${new Date().toISOString().split('T')[0]}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const filtered = churches.filter(c => c.nome.toLowerCase().includes(filter.toLowerCase()));
+  const filtered = clients.filter(c =>
+    c.nome.toLowerCase().includes(filter.toLowerCase()) ||
+    c.igrejaNome.toLowerCase().includes(filter.toLowerCase())
+  );
 
-  const toggleStatus = async (id: string, currentStatus: string) => {
+  const toggleStatus = async (igrejaId: string | null, currentStatus: string) => {
+    if (!igrejaId) return;
     try {
       const nextStatus = currentStatus === 'ativa' ? 'bloqueada' : 'ativa';
       const { error } = await supabase
         .from('assinaturas')
         .update({ status: nextStatus })
-        .eq('igreja_id', id);
+        .eq('igreja_id', igrejaId);
 
       if (error) throw error;
-      fetchChurches();
+      fetchClients();
     } catch (err) {
       alert('Erro ao alterar status');
     }
@@ -117,14 +165,14 @@ const ChurchClientsManager: React.FC = () => {
     return <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${styles[status]}`}>{status}</span>;
   };
 
-  if (loading) return <div className="p-10 text-center animate-pulse text-stone-400">Carregando clientes...</div>;
+  if (loading && clients.length === 0) return <div className="p-10 text-center animate-pulse text-stone-400">Carregando clientes...</div>;
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-black text-stone-800">Assinantes (Igrejas)</h1>
-          <p className="text-stone-500 text-sm">Gerencie o acesso e planos das igrejas clientes</p>
+          <h1 className="text-2xl font-black text-stone-800">Base de Clientes</h1>
+          <p className="text-stone-500 text-sm">Gerencie todos os perfis de administradores e suas igrejas</p>
         </div>
         <button
           onClick={exportToCSV}
@@ -138,7 +186,7 @@ const ChurchClientsManager: React.FC = () => {
       <div className="bg-white p-4 rounded-3xl shadow-sm border border-stone-100">
         <input
           type="text"
-          placeholder="Buscar por nome da igreja..."
+          placeholder="Buscar por nome do cliente ou igreja..."
           className="w-full px-5 py-3 bg-stone-50 border-none rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -149,15 +197,15 @@ const ChurchClientsManager: React.FC = () => {
         <table className="min-w-full divide-y divide-stone-100">
           <thead className="bg-stone-50">
             <tr>
-              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Igreja</th>
-              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Plano / Status</th>
-              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Membros</th>
+              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Administrador</th>
+              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Igreja / Plano</th>
+              <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Status</th>
               <th className="px-6 py-5 text-left text-[10px] font-black text-stone-400 uppercase tracking-widest">Vencimento</th>
               <th className="px-6 py-5 text-right text-[10px] font-black text-stone-400 uppercase tracking-widest">Ações</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-stone-100">
-            {filtered.map(c => (
+            {filtered.length > 0 ? filtered.map(c => (
               <tr key={c.id} className="hover:bg-stone-50/50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="flex flex-col">
@@ -166,32 +214,45 @@ const ChurchClientsManager: React.FC = () => {
                   </div>
                 </td>
                 <td className="px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest bg-stone-100 px-2 py-0.5 rounded-lg">{c.planoNome}</span>
-                    {getStatusBadge(c.status)}
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-stone-700">{c.igrejaNome}</span>
+                    <span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">{c.planoNome}</span>
                   </div>
                 </td>
                 <td className="px-6 py-4">
-                  <span className="text-sm font-bold text-stone-700">{c.membrosAtuais}</span>
+                  {getStatusBadge(c.status)}
                 </td>
                 <td className="px-6 py-4">
                   <span className={`text-[11px] font-black uppercase tracking-widest ${new Date(c.dataExpiracao) < new Date() ? 'text-red-500' : 'text-stone-400'}`}>
                     {new Date(c.dataExpiracao).toLocaleDateString('pt-BR')}
                   </span>
                 </td>
-                <td className="px-6 py-4 text-right">
+                <td className="px-6 py-4 text-right flex justify-end gap-2">
                   <button
-                    onClick={() => toggleStatus(c.id, c.status)}
-                    className={`px-4 py-2 rounded-xl font-black text-[10px] uppercase transition-all active:scale-95 ${c.status === 'bloqueada'
+                    onClick={() => toggleStatus(c.igrejaId, c.status)}
+                    disabled={!c.igrejaId}
+                    className={`px-3 py-2 rounded-xl font-black text-[10px] uppercase transition-all active:scale-95 disabled:opacity-30 ${c.status === 'bloqueada'
                       ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                      : 'bg-red-50 text-red-600 hover:bg-red-100'
+                      : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
                       }`}
                   >
-                    {c.status === 'bloqueada' ? 'Desbloquear' : 'Bloquear'}
+                    {c.status === 'bloqueada' ? 'OK' : 'Bloquear'}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteClient(c)}
+                    className="px-3 py-2 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase hover:bg-red-100 transition-all active:scale-95"
+                  >
+                    Excluir
                   </button>
                 </td>
               </tr>
-            ))}
+            )) : (
+              <tr>
+                <td colSpan={5} className="px-6 py-10 text-center text-stone-400 font-bold italic">
+                  Nenhum cliente administrador encontrado.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

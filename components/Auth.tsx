@@ -35,6 +35,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           email,
           password,
           options: {
+            emailRedirectTo: window.location.origin,
             data: {
               nome: name,
               role: 'admin_igreja',
