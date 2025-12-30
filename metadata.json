@@ -1,0 +1,8 @@
+{
+  "name": "SaaS Base Pro",
+  "description": "Uma base robusta para aplicações SaaS com autenticação, dashboard interativo e assistente de IA integrado usando Gemini.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
